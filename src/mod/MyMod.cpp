@@ -3,13 +3,19 @@
 
 #include "ll/api/Config.h"
 #include "ll/api/Logger.h"
+#include "ll/api/command/CommandHandle.h"
+#include "ll/api/command/CommandRegistrar.h"
 #include "ll/api/event/EventBus.h"
 #include "ll/api/event/world/SpawnMobEvent.h"
 #include "ll/api/mod/RegisterHelper.h"
 
+
+#include "mc/server/commands/CommandOrigin.h"
+#include "mc/server/commands/CommandOutput.h"
 #include "mc/world/actor/Mob.h"
 #include "mc/world/attribute/AttributeInstance.h"
 #include "mc/world/attribute/SharedAttributes.h"
+
 
 #include <memory>
 #include <string>
@@ -20,6 +26,20 @@ Config config;
 
 bool stringInclude(const std::string& str, const std::string& substr) { return str.find(substr) != std::string::npos; }
 
+void enableMod() {
+    ll::Logger logger("CustomMob");
+    if (config.mobs.empty()) {
+        logger.warn("请添加生物属性...");
+    }
+
+    for (auto& mob : config.mobs) {
+        if (!stringInclude(mob.first, "minecraft:")) {
+            config.mobs["minecraft:" + mob.first] = mob.second;
+            config.mobs.erase(mob.first);
+        }
+    }
+    ll::config::saveConfig(config, my_mod::MyMod::getInstance().getSelf().getConfigDir() / "config.json");
+}
 
 void reloadConfig() {
     ll::Logger logger("CustomMob");
@@ -29,24 +49,10 @@ void reloadConfig() {
         logger.warn("Cannot load configurations from {}", configFilePath);
         logger.info("Saving default configurations");
     }
+    // ll::config::saveConfig(config, configFilePath);
+    enableMod();
 }
 
-void enableMod() {
-    ll::Logger logger("CustomMob");
-    if (config.mobs.empty()) {
-        logger.info("请添加生物属性");
-        return;
-    }
-
-    for (auto& mob : config.mobs) {
-        if (!stringInclude(mob.first, "minecraft:")) {
-            config.mobs["minecraft:" + mob.first] = mob.second;
-            config.mobs.erase(mob.first);
-        }
-    }
-
-    reloadConfig();
-}
 
 void enableForMob(Mob& mob) {
     if (config.mobs.empty()) {
@@ -115,6 +121,26 @@ void enableForMob(Mob& mob) {
     }
 }
 
+void regReloadCommand() {
+    auto& cmdBus = ll::command::CommandRegistrar::getInstance();
+    auto& cmd    = cmdBus.getOrCreateCommand("custommob", "重载", CommandPermissionLevel::GameDirectors);
+    cmd.alias("cm");
+    cmd.overload().execute([](CommandOrigin const& origin, CommandOutput& output) {
+        if (origin.getOriginType() == CommandOriginType::DedicatedServer) {
+            reloadConfig();
+            output.success("[CustomMob] 重载配置文件成功");
+            return;
+        };
+        auto entity = origin.getEntity();
+        if (entity == nullptr || !entity->isType(ActorType::Player)) {
+            output.error("[CustomMob] 此命令只能玩家或者控制台使用");
+            return;
+        }
+        reloadConfig();
+        output.success("[CustomMob] 重载配置文件成功");
+    });
+}
+
 namespace my_mod {
 
 static std::unique_ptr<MyMod> instance;
@@ -141,6 +167,7 @@ bool MyMod::enable() {
     getSelf().getLogger().debug("Enabling...");
     // Code for enabling the mod goes here.
     enableMod();
+    regReloadCommand();
     auto& eventBus = ll::event::EventBus::getInstance();
 
     eventBus.emplaceListener<ll::event::SpawnedMobEvent>([](ll::event::SpawnedMobEvent& event) -> bool {
